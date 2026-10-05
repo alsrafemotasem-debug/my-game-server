@@ -1,60 +1,159 @@
 const WebSocket = require('ws');
-const wss = new WebSocket.Server({ port: process.env.PORT || 10000 });
+const PORT = process.env.PORT || 10000;
+const wss = new WebSocket.Server({ port: PORT });
 
-// تخزين الحسابات المسجلة واللاعبين المتصلين
-let usersDatabase = []; // سيحفظ الحسابات الحقيقية (اسم المستخدم، كلمة المرور، الـ ID)
+let usersDatabase = [];
 let clients = [];
 
 wss.on('connection', (ws) => {
     clients.push(ws);
-    console.log("تم اتصال لاعب جديد بالسيرفر الحقيقي.");
+    ws.id = Math.floor(Math.random() * 900000) + 100000;
+    ws.send(JSON.stringify({ type: "welcome", id: ws.id }));
+    console.log("-> لاعب متصل جديد، المعرف المؤقت:", ws.id);
 
     ws.on('message', (message) => {
         try {
             const data = JSON.parse(message);
+            console.log("استلام رسالة:", data.type);
 
-            // 1. طلب إنشاء حساب جديد (Sign Up)
+            // 1. إنشاء حساب جديد
             if (data.type === "register") {
-                const existingUser = usersDatabase.find(u => u.username === data.username);
-                if (existingUser) {
-                    ws.send(JSON.stringify({ type: "register_response", success: false, message: "اسم المستخدم مستخدم مسبقاً!" }));
+                const existing = usersDatabase.find(u => u.username === data.username);
+                if (existing) {
+                    ws.send(JSON.stringify({ type: "auth_error", message: "اسم المستخدم موجود مسبقاً!" }));
                 } else {
                     const newUser = {
-                        id: Math.floor(Math.random() * 900000) + 100000, // ID حقيقي من 6 أرقام
+                        id: Math.floor(Math.random() * 900000) + 100000,
                         username: data.username,
                         password: data.password,
-                        auth: data.auth || "Guest"
+                        provider: "password",
+                        friends: [],
+                        requests: []
                     };
                     usersDatabase.push(newUser);
-                    ws.send(JSON.stringify({ 
-                        type: "register_response", 
-                        success: true, 
-                        id: newUser.id, 
-                        username: newUser.username,
-                        message: "تم إنشاء الحساب بنجاح!" 
+                    ws.id = newUser.id;
+                    ws.username = newUser.username;
+                    console.log(`تم إنشاء حساب بنجاح: ${newUser.username} (ID: ${newUser.id})`);
+                    ws.send(JSON.stringify({
+                        type: "login_ok",
+                        user: { id: newUser.id, username: newUser.username, provider: "password" },
+                        friends: [],
+                        requests: []
                     }));
-                    console.log(`تم تسجيل حساب جديد: ${newUser.username} بمعرف ID: ${newUser.id}`);
                 }
             }
-            // 2. طلب تسجيل الدخول بحساب حقيقي (Login)
+            // 2. تسجيل الدخول
             else if (data.type === "login") {
                 const user = usersDatabase.find(u => u.username === data.username && u.password === data.password);
                 if (user) {
-                    ws.id = user.id; // ربط اتصال الـ WebSocket بمعرف اللاعب الحقيقي
+                    ws.id = user.id;
                     ws.username = user.username;
-                    ws.send(JSON.stringify({ 
-                        type: "login_response", 
-                        success: true, 
-                        id: user.id, 
-                        username: user.username,
-                        message: "تم تسجيل الدخول بنجاح!" 
+                    console.log(`تسجيل دخول ناجح: ${user.username} (ID: ${user.id})`);
+                    ws.send(JSON.stringify({
+                        type: "login_ok",
+                        user: { id: user.id, username: user.username, provider: user.provider },
+                        friends: user.friends || [],
+                        requests: user.requests || []
                     }));
-                    console.log(`تسجيل دخول ناجح للاعب: ${user.username} (ID: ${user.id})`);
                 } else {
-                    ws.send(JSON.stringify({ type: "login_response", success: false, message: "خطأ في اسم المستخدم أو كلمة المرور!" }));
+                    ws.send(JSON.stringify({ type: "auth_error", message: "خطأ في اسم المستخدم أو كلمة المرور!" }));
                 }
             }
-            // 3. مزامنة الحركة واللعب الجماعي
+            // 3. الدخول كضيف (Guest) - تم إصلاحها هنا لترد على جودوت مباشرة
+            else if (data.type === "guest") {
+                const guestUser = {
+                    id: Math.floor(Math.random() * 900000) + 100000,
+                    username: "Guest_" + Math.floor(Math.random() * 1000),
+                    provider: "guest",
+                    friends: [],
+                    requests: []
+                };
+                usersDatabase.push(guestUser);
+                ws.id = guestUser.id;
+                ws.username = guestUser.username;
+                console.log(`دخول ضيف جديد: ${guestUser.username} (ID: ${guestUser.id})`);
+                
+                // الرد الفوري على جودوت لفتح اللوبي
+                ws.send(JSON.stringify({
+                    type: "login_ok",
+                    user: { id: guestUser.id, username: guestUser.username, provider: "guest" },
+                    friends: [],
+                    requests: []
+                }));
+            }
+            // 4. إضافة صديق بالـ ID
+            else if (data.type === "add_friend") {
+                const targetId = parseInt(data.target_id);
+                const targetUser = usersDatabase.find(u => u.id === targetId);
+                const currentUser = usersDatabase.find(u => u.id === ws.id);
+
+                if (targetUser && currentUser) {
+                    if (!targetUser.requests) targetUser.requests = [];
+                    if (!targetUser.requests.some(r => r.id === currentUser.id)) {
+                        targetUser.requests.push({ id: currentUser.id, username: currentUser.username });
+                    }
+                    ws.send(JSON.stringify({
+                        type: "friend_sent",
+                        target: { id: targetUser.id, username: targetUser.username }
+                    }));
+
+                    const targetClient = clients.find(c => c.id === targetId);
+                    if (targetClient && targetClient.readyState === WebSocket.OPEN) {
+                        targetClient.send(JSON.stringify({
+                            type: "friend_request",
+                            from: { id: currentUser.id, username: currentUser.username }
+                        }));
+                    }
+                } else {
+                    ws.send(JSON.stringify({ type: "friend_error", message: "لم يتم العثور على لاعب بهذا الـ ID!" }));
+                }
+            }
+            // 5. قبول طلب الصداقة
+            else if (data.type === "accept_friend") {
+                const friendId = parseInt(data.friend_id);
+                const currentUser = usersDatabase.find(u => u.id === ws.id);
+                const friendUser = usersDatabase.find(u => u.id === friendId);
+
+                if (currentUser && friendUser) {
+                    currentUser.requests = (currentUser.requests || []).filter(r => r.id !== friendId);
+                    
+                    if (!currentUser.friends) currentUser.friends = [];
+                    if (!currentUser.friends.some(f => f.id === friendUser.id)) {
+                        currentUser.friends.push({ id: friendUser.id, username: friendUser.username });
+                    }
+                    if (!friendUser.friends) friendUser.friends = [];
+                    if (!friendUser.friends.some(f => f.id === currentUser.id)) {
+                        friendUser.friends.push({ id: currentUser.id, username: currentUser.username });
+                    }
+
+                    ws.send(JSON.stringify({
+                        type: "friend_accepted",
+                        friend: { id: friendUser.id, username: friendUser.username },
+                        friends: currentUser.friends
+                    }));
+
+                    const friendClient = clients.find(c => c.id === friendId);
+                    if (friendClient && friendClient.readyState === WebSocket.OPEN) {
+                        friendClient.send(JSON.stringify({
+                            type: "friends",
+                            friends: friendUser.friends,
+                            requests: friendUser.requests || []
+                        }));
+                    }
+                }
+            }
+            // 6. طلب قائمة الأصدقاء
+            else if (data.type === "get_friends") {
+                const currentUser = usersDatabase.find(u => u.id === ws.id);
+                if (currentUser) {
+                    ws.send(JSON.stringify({
+                        type: "friends",
+                        friends: currentUser.friends || [],
+                        requests: currentUser.requests || []
+                    }));
+                }
+            }
+            // 7. مزامنة الحركة
             else if (data.type === "move") {
                 clients.forEach(client => {
                     if (client !== ws && client.readyState === WebSocket.OPEN) {
@@ -68,9 +167,9 @@ wss.on('connection', (ws) => {
     });
 
     ws.on('close', () => {
-        clients = clients.filter(client => client !== ws);
+        clients = clients.filter(c => c !== ws);
+        console.log("<- انقطع اتصال لاعب.");
     });
 });
 
-console.log("سيرفر الحسابات الحقيقية يعمل بكفاءة تامة!");
-
+console.log(`السيرفر يعمل الآن على المنفذ: ${PORT}`);
