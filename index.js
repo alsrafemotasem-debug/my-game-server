@@ -1,26 +1,27 @@
 const express = require('express');
 const http = require('http');
 const WebSocket = require('ws');
-
 const app = express();
 const server = http.createServer(app);
 const wss = new WebSocket.Server({ server });
-
 let players = {};
 let nextId = 1;
 
-app.get('/', (req, res) => {
-  res.send('Server is running! Players online: ' + Object.keys(players).length);
-});
+app.get('/', (req, res) => { res.send('Server is running! Players: ' + Object.keys(players).length); });
 
 wss.on('connection', (ws) => {
   const id = nextId++;
   players[id] = { x: 0, y: 0, z: 0, rot: 0 };
   console.log('Player connected: ' + id);
 
+  // 1. ابعت للجديد الـ ID متاعه
   ws.send(JSON.stringify({ type: 'welcome', id: id }));
+  
+  // 2. ابعت للجديد كل اللاعبين اللي قاعدين قبله - باش يشوفهم
   ws.send(JSON.stringify({ type: 'players', players: players }));
-  broadcast(JSON.stringify({ type: 'player_joined', id: id, pos: players[id] }), ws);
+
+  // 3. نبّه القدامى ان واحد جديد خش
+  broadcast(JSON.stringify({ type: 'player_joined', id: id }), ws);
 
   ws.on('message', (msg) => {
     try {
@@ -29,10 +30,7 @@ wss.on('connection', (ws) => {
         players[id] = data.pos;
         broadcast(JSON.stringify({ type: 'player_move', id: id, pos: data.pos }), ws);
       }
-      if (data.type === 'chat') {
-        broadcast(JSON.stringify({ type: 'chat', id: id, text: data.text }));
-      }
-    } catch(e) { console.log('Bad message', e); }
+    } catch(e) {}
   });
 
   ws.on('close', () => {
@@ -44,9 +42,7 @@ wss.on('connection', (ws) => {
 
 function broadcast(msg, exclude) {
   wss.clients.forEach((client) => {
-    if (client !== exclude && client.readyState === WebSocket.OPEN) {
-      client.send(msg);
-    }
+    if (client !== exclude && client.readyState === WebSocket.OPEN) client.send(msg);
   });
 }
 
