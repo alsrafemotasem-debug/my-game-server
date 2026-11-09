@@ -1,26 +1,54 @@
-const { Server } = require("ws");
+const express = require('express');
+const http = require('http');
+const WebSocket = require('ws');
 
-// إنشاء السيرفر على المنفذ الذي توفره المنصة تلقائياً
-const PORT = process.env.PORT || 3000;
-const wss = new Server({ port: PORT });
+const app = express();
+const server = http.createServer(app);
+const wss = new WebSocket.Server({ server });
 
-console.log(`سيرفر اللعبة يعمل الآن بنجاح على المنفذ: ${PORT}`);
+let players = {};
+let nextId = 1;
 
-wss.on("connection", (ws) => {
-  console.log("انضم لاعب جديد إلى السيرفر!");
+app.get('/', (req, res) => {
+  res.send('Server is running! Players online: ' + Object.keys(players).length);
+});
 
-  // استقبال رسائل اللاعبين وإعادة توجيهها للبقية (Relay)
-  ws.on("message", (message) => {
-    // إرسال البيانات لكل اللاعبين المتصلين في الغرفة
-    wss.clients.forEach((client) => {
-      if (client.readyState === ws.OPEN) {
-        client.send(message);
+wss.on('connection', (ws) => {
+  const id = nextId++;
+  players[id] = { x: 0, y: 0, z: 0, rot: 0 };
+  console.log('Player connected: ' + id);
+
+  ws.send(JSON.stringify({ type: 'welcome', id: id }));
+  ws.send(JSON.stringify({ type: 'players', players: players }));
+  broadcast(JSON.stringify({ type: 'player_joined', id: id, pos: players[id] }), ws);
+
+  ws.on('message', (msg) => {
+    try {
+      const data = JSON.parse(msg.toString());
+      if (data.type === 'move') {
+        players[id] = data.pos;
+        broadcast(JSON.stringify({ type: 'player_move', id: id, pos: data.pos }), ws);
       }
-    });
+      if (data.type === 'chat') {
+        broadcast(JSON.stringify({ type: 'chat', id: id, text: data.text }));
+      }
+    } catch(e) { console.log('Bad message', e); }
   });
 
-  ws.on("close", () => {
-    console.log("غادر أحد اللاعبين السيرفر.");
+  ws.on('close', () => {
+    console.log('Player left: ' + id);
+    delete players[id];
+    broadcast(JSON.stringify({ type: 'player_left', id: id }));
   });
 });
 
+function broadcast(msg, exclude) {
+  wss.clients.forEach((client) => {
+    if (client !== exclude && client.readyState === WebSocket.OPEN) {
+      client.send(msg);
+    }
+  });
+}
+
+const PORT = process.env.PORT || 10000;
+server.listen(PORT, () => console.log('Server listening on ' + PORT));
