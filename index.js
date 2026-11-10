@@ -1,50 +1,72 @@
 const express = require('express');
 const http = require('http');
 const WebSocket = require('ws');
+
 const app = express();
 const server = http.createServer(app);
 const wss = new WebSocket.Server({ server });
+const PORT = process.env.PORT || 3000;
+
+// باش UptimeRobot ينوض السيرفر
+app.get('/', (req, res) => {
+  res.send('🎮 Game Server Running! Players: ' + Object.keys(players).length);
+});
+app.get('/ping', (req, res) => {
+  res.send('alive ✅');
+});
+app.get('/health', (req, res) => {
+  res.json({ status: 'online', players: Object.keys(players).length, uptime: process.uptime() });
+});
+
 let players = {};
 let nextId = 1;
 
-app.get('/', (req, res) => { res.send('Server is running! Players: ' + Object.keys(players).length); });
-
 wss.on('connection', (ws) => {
   const id = nextId++;
-  players[id] = { x: 0, y: 0, z: 0, rot: 0 };
-  console.log('Player connected: ' + id);
+  players[id] = { id: id, x: 0, y: 1, z: 0, rot_y: 0, anim: 'idle', speed: 0 };
+  console.log('Player connected:', id);
 
-  // 1. ابعت للجديد الـ ID متاعه
-  ws.send(JSON.stringify({ type: 'welcome', id: id }));
-  
-  // 2. ابعت للجديد كل اللاعبين اللي قاعدين قبله - باش يشوفهم
-  ws.send(JSON.stringify({ type: 'players', players: players }));
+  ws.send(JSON.stringify({ type: 'welcome', yourId: id, players: players }));
+  broadcast({ type: 'player_joined', player: players[id] }, ws);
 
-  // 3. نبّه القدامى ان واحد جديد خش
-  broadcast(JSON.stringify({ type: 'player_joined', id: id }), ws);
-
-  ws.on('message', (msg) => {
+  ws.on('message', (data) => {
     try {
-      const data = JSON.parse(msg.toString());
-      if (data.type === 'move') {
-        players[id] = data.pos;
-        broadcast(JSON.stringify({ type: 'player_move', id: id, pos: data.pos }), ws);
+      const msg = JSON.parse(data.toString());
+      if (msg.type === 'move') {
+        players[id].x = msg.x;
+        players[id].y = msg.y;
+        players[id].z = msg.z;
+        players[id].rot_y = msg.rot_y || 0;
+        players[id].anim = msg.anim || 'idle';
+        players[id].speed = msg.speed || 0;
+        broadcast({ type: 'player_moved', player: players[id] }, ws);
       }
-    } catch(e) {}
+      if (msg.type === 'chat') {
+        broadcast({ type: 'chat', from: id, text: msg.text });
+      }
+    } catch (e) { console.log('Bad msg', e); }
   });
 
   ws.on('close', () => {
-    console.log('Player left: ' + id);
+    console.log('Player left:', id);
     delete players[id];
-    broadcast(JSON.stringify({ type: 'player_left', id: id }));
+    broadcast({ type: 'player_left', id: id });
   });
 });
 
-function broadcast(msg, exclude) {
+function broadcast(msg, except) {
+  const str = JSON.stringify(msg);
   wss.clients.forEach((client) => {
-    if (client !== exclude && client.readyState === WebSocket.OPEN) client.send(msg);
+    if (client !== except && client.readyState === WebSocket.OPEN) {
+      client.send(str);
+    }
   });
 }
 
-const PORT = process.env.PORT || 10000;
-server.listen(PORT, () => console.log('Server listening on ' + PORT));
+setInterval(() => {
+  console.log('Keep-alive - Players:', Object.keys(players).length);
+}, 10 * 60 * 1000);
+
+server.listen(PORT, () => {
+  console.log('✅ Server running on port', PORT);
+});
